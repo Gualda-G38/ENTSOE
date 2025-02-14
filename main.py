@@ -1,19 +1,18 @@
 import requests
 import pandas as pd
-from xml.etree import ElementTree
+from xml.etree import ElementTree as ET
 from dotenv import load_dotenv
 import os
 
-
-# Informations de base pour l'API
 API_URL = "https://web-api.tp.entsoe.eu/api"
 
-#Load tu API key
+# Load API key
 load_dotenv()
 API_KEY = os.getenv("ENTSOE_API_KEY")
 
-start_date = "20240101"  # Date de début pour tester
-end_date = "20240102"    # Date de fin pour tester
+# Features for the GET REQUEST
+start_date = "20240101"
+end_date = "20241231"
 process_type = "A16"
 area_code = "10YFR-RTE------C"
 resolution = "PT60M"
@@ -22,12 +21,12 @@ resolution = "PT60M"
 start_dates = pd.date_range(start=start_date, end=end_date, freq="D")
 end_dates = start_dates + pd.Timedelta(days=1)
 
-# Liste pour stocker les résultats
-all_data = []
+# List to stock the data
+data = []
 
-# Fonction pour effectuer la requête API et récupérer les données
+# Create a fonction to get the API response
 def fetch_data_from_api(start_date, end_date):
-    # Convertir les dates en format requis pour l'API
+    # Convert date to fit the API format
     period_start = start_date.strftime("%Y%m%d%H%M")
     period_end = end_date.strftime("%Y%m%d%H%M")
 
@@ -41,38 +40,51 @@ def fetch_data_from_api(start_date, end_date):
         "periodEnd": period_end
     }
 
-    # Effectuer la requête API
+    # Request
     response = requests.get(API_URL, params=params)
+    print(f"Status Code: {response.status_code}")
 
     if response.status_code == 200:
-        # Parse le contenu XML
-        root = ElementTree.fromstring(response.content)
+        # Reload the XML file to ensure clean parsing
+        root = ET.fromstring(response.content)
 
-        # Extraction des données pour chaque TimeSeries
-        for timeseries in root.findall(".//{*}TimeSeries"):
-            central_code = timeseries.find(".//{*}PowerSystemResources/{*}mRID").text
-            central_name = timeseries.find(".//{*}PowerSystemResources/{*}name").text
-            start_date = timeseries.find(".//{*}Period/{*}timeInterval/{*}start").text[:10]  # Date au format YYYY-MM-DD
+        # Handle XML namespaces
+        namespaces = {
+            'ns0': 'urn:iec62325.351:tc57wg16:451-6:generationloaddocument:3:0'
+        }
 
-            # Préparer les valeurs horaires (de 1 à 24)
-            hourly_data = {i: 0 for i in range(1, 25)}  # Valeur par défaut à 0
-            for point in timeseries.findall(".//{*}Period/{*}Point"):
-                position = point.find("{*}position")
-                quantity = point.find("{*}quantity")
-                if position is not None and quantity is not None:
-                    hourly_data[int(position.text)] = float(quantity.text)
+        # Iterate through each TimeSeries
+        for timeseries in root.findall(".//ns0:TimeSeries", namespaces):
+            ts_id = timeseries.find("ns0:mRID", namespaces).text if timeseries.find("ns0:mRID", namespaces) is not None else "Unknown"
+            bidding_zone_elem = timeseries.find("ns0:inBiddingZone_Domain.mRID", namespaces)
+            bidding_zone = bidding_zone_elem.text if bidding_zone_elem is not None else "Unknown"
+            resource_elem = timeseries.find("ns0:MktPSRType/ns0:PowerSystemResources/ns0:name", namespaces)
+            resource_name = resource_elem.text if resource_elem is not None else "Unknown"
 
-            # Ajouter les données pour chaque heure
-            for hour, value in hourly_data.items():
-                all_data.append({
-                    "Date": start_date,
-                    "Hour": hour,
-                    "Central Code": central_code,
-                    "Central Name": central_name,
-                    "Value (MW)": value,
-                })
+            # Get the start time and resolution, handling missing values
+            period = timeseries.find("ns0:Period", namespaces)
+            if period is not None:
+                start_time_elem = period.find("ns0:timeInterval/ns0:start", namespaces)
+                start_time = start_time_elem.text if start_time_elem is not None else "1970-01-01T00:00Z"
+                resolution_elem = period.find("ns0:resolution", namespaces)
+                resolution = resolution_elem.text if resolution_elem is not None else "PT60M"
+
+                # Convert start time to datetime
+                start_dt = pd.to_datetime(start_time)
+
+                # Iterate through all Points in the TimeSeries
+                for point in period.findall("ns0:Point", namespaces):
+                    position_elem = point.find("ns0:position", namespaces)
+                    quantity_elem = point.find("ns0:quantity", namespaces)
+
+                    position = int(position_elem.text) if position_elem is not None else 0
+                    quantity = float(quantity_elem.text) if quantity_elem is not None else 0.0
+                    timestamp = start_dt + pd.Timedelta(minutes=60 * (position - 1))  # Adjust time based on resolution
+
+                    data.append([ts_id, resource_name, bidding_zone, timestamp, quantity])
+
     else:
-        print(f"Erreur {response.status_code} pour la période {period_start} - {period_end}")
+        print(f"Error {response.status_code} for the period {period_start} - {period_end}")
 
 # Boucle pour chaque jour
 for start, end in zip(start_dates, end_dates):
@@ -80,7 +92,7 @@ for start, end in zip(start_dates, end_dates):
     fetch_data_from_api(start, end)
 
 # Convertir les données en DataFrame
-df = pd.DataFrame(all_data)
+df = pd.DataFrame(data, columns=["TimeSeries_ID", "Resource_Name", "BiddingZone", "Timestamp", "Quantity"])
 
 # Sauvegarder au format CSV
 output_file = f"production_horaire_{start_date}_to_{end_date}.csv"
