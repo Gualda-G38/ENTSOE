@@ -1,10 +1,16 @@
 import requests
 import pandas as pd
 from xml.etree import ElementTree
+from dotenv import load_dotenv
+import os
+
 
 # Informations de base pour l'API
 API_URL = "https://web-api.tp.entsoe.eu/api"
-API_KEY = "85a8c0e0-cef2-47b7-a1b2-e09a6a86a7fa"  # Remplacer par votre clé API
+
+#Load tu API key
+load_dotenv()
+API_KEY = os.getenv("ENTSOE_API_KEY")
 
 start_date = "20240101"  # Date de début pour tester
 end_date = "20240102"    # Date de fin pour tester
